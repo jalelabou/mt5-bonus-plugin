@@ -1,7 +1,7 @@
 import logging
 
 from app.config.settings import settings
-from app.gateway.interface import MT5Gateway, MT5Account, MT5Deal  # noqa: F401
+from app.gateway.interface import MT5Gateway, MT5Account, MT5Deal, MT5BalanceDeal  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

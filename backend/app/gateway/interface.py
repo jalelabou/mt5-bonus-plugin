@@ -27,6 +27,16 @@ class MT5Deal:
     entry: str  # "in" or "out"
 
 
+@dataclass
+class MT5BalanceDeal:
+    """A balance operation (deposit or withdrawal), not a trade."""
+    deal_id: str
+    login: str
+    amount: float       # positive = deposit, negative = withdrawal
+    timestamp: float
+    comment: str
+
+
 class MT5Gateway(ABC):
     @abstractmethod
     async def get_account_info(self, login: str) -> Optional[MT5Account]:
@@ -56,4 +66,26 @@ class MT5Gateway(ABC):
 
     @abstractmethod
     async def get_account_group(self, login: str) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    async def close_all_positions(self, login: str) -> bool:
+        """Close all open positions for the account."""
+        pass
+
+    @abstractmethod
+    async def get_all_logins(self) -> List[str]:
+        """Return all account logins on the MT5 server."""
+        pass
+
+    @abstractmethod
+    async def get_all_groups(self) -> List[str]:
+        """Return all user groups available on the MT5 server."""
+        pass
+
+    @abstractmethod
+    async def get_balance_deals(
+        self, login: str, from_timestamp: Optional[float] = None
+    ) -> List["MT5BalanceDeal"]:
+        """Return balance operations (deposits/withdrawals), excluding trades and credit ops."""
         pass

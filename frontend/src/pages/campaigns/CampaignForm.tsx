@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { Form, Input, InputNumber, Select, Switch, Button, Card, Typography, DatePicker, message, Space } from "antd";
+import { useEffect, useState, useCallback } from "react";
+import { Form, Input, InputNumber, Select, Switch, Button, Card, Typography, DatePicker, message, Space, Tooltip } from "antd";
+import { ReloadOutlined } from "@ant-design/icons";
 import { useNavigate, useParams } from "react-router-dom";
-import { createCampaign, getCampaign, updateCampaign } from "../../api/endpoints";
+import { createCampaign, getCampaign, updateCampaign, getMT5Metadata } from "../../api/endpoints";
 import dayjs from "dayjs";
 
 export default function CampaignForm() {
@@ -9,10 +10,27 @@ export default function CampaignForm() {
   const isEdit = !!id;
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [bonusType, setBonusType] = useState("B");
+  const [triggerTypes, setTriggerTypes] = useState<string[]>([]);
+  const [mt5Groups, setMt5Groups] = useState<string[]>([]);
+  const [mt5Countries, setMt5Countries] = useState<string[]>([]);
   const navigate = useNavigate();
 
+  const fetchMetadata = useCallback((showMessage = false) => {
+    setScanning(true);
+    getMT5Metadata().then((res) => {
+      setMt5Groups(res.data.groups || []);
+      setMt5Countries(res.data.countries || []);
+      if (showMessage) message.success(`Loaded ${res.data.groups.length} groups, ${res.data.countries.length} countries, ${res.data.accounts.length} accounts`);
+    }).catch(() => {
+      if (showMessage) message.error("Failed to scan MT5");
+    }).finally(() => setScanning(false));
+  }, []);
+
   useEffect(() => {
+    fetchMetadata();
+
     if (isEdit) {
       getCampaign(Number(id)).then((res) => {
         const data = { ...res.data } as Record<string, unknown>;
@@ -20,6 +38,7 @@ export default function CampaignForm() {
         if (data.end_date) data.end_date = dayjs(data.end_date as string);
         form.setFieldsValue(data);
         setBonusType((data.bonus_type as string) || "B");
+        setTriggerTypes((data.trigger_types as string[]) || []);
       });
     }
   }, [id]);
@@ -46,9 +65,16 @@ export default function CampaignForm() {
 
   return (
     <>
-      <Typography.Title level={3}>{isEdit ? "Edit Campaign" : "New Campaign"}</Typography.Title>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <Typography.Title level={3} style={{ margin: 0 }}>{isEdit ? "Edit Campaign" : "New Campaign"}</Typography.Title>
+        <Tooltip title="Rescan MT5 for new groups, countries and accounts">
+          <Button icon={<ReloadOutlined spin={scanning} />} loading={scanning} onClick={() => fetchMetadata(true)}>
+            Scan MT5
+          </Button>
+        </Tooltip>
+      </div>
       <Card>
-        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ bonus_type: "B", bonus_percentage: 100, max_concurrent_bonuses: 1, one_bonus_per_account: false, trigger_types: [] }}>
+        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ bonus_type: "B", bonus_percentage: 100, max_concurrent_bonuses: 1, one_bonus_per_account: false, trigger_types: [], target_mt5_groups: [], target_countries: [], agent_codes: [] }}>
           <Form.Item name="name" label="Campaign Name" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
@@ -101,7 +127,7 @@ export default function CampaignForm() {
           )}
 
           <Form.Item name="trigger_types" label="Trigger Types">
-            <Select mode="multiple" style={{ width: "100%" }} options={[
+            <Select mode="multiple" style={{ width: "100%" }} onChange={(v) => setTriggerTypes(v)} options={[
               { label: "Auto on Deposit", value: "auto_deposit" },
               { label: "Promo Code", value: "promo_code" },
               { label: "Registration", value: "registration" },
@@ -109,10 +135,31 @@ export default function CampaignForm() {
             ]} />
           </Form.Item>
 
-          <Space size="large" wrap>
+          {triggerTypes.includes("promo_code") && (
             <Form.Item name="promo_code" label="Promo Code">
-              <Input style={{ width: 200 }} />
+              <Input style={{ width: 300 }} placeholder="Enter promo code" />
             </Form.Item>
+          )}
+
+          {triggerTypes.includes("agent_code") && (
+            <Form.Item name="agent_codes" label="Agent Codes" extra="Type an agent code and press Enter to add">
+              <Select mode="tags" style={{ width: "100%" }} placeholder="Add agent codes" tokenSeparators={[","]} />
+            </Form.Item>
+          )}
+
+          <Form.Item name="target_mt5_groups" label="Target MT5 Groups" extra="Leave empty to target all groups">
+            <Select mode="multiple" style={{ width: "100%" }} placeholder="All groups" allowClear
+              options={mt5Groups.map((g) => ({ label: g, value: g }))}
+            />
+          </Form.Item>
+
+          <Form.Item name="target_countries" label="Target Countries" extra="Leave empty to target all countries">
+            <Select mode="multiple" style={{ width: "100%" }} placeholder="All countries" allowClear
+              options={mt5Countries.map((c) => ({ label: c, value: c }))}
+            />
+          </Form.Item>
+
+          <Space size="large" wrap>
             <Form.Item name="start_date" label="Start Date">
               <DatePicker showTime />
             </Form.Item>

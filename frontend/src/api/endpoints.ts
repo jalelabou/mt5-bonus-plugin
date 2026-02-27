@@ -58,6 +58,9 @@ export const overrideLeverage = (id: number, newLeverage: number) =>
 export const getAccount = (login: string) =>
   api.get(`/accounts/${login}`);
 
+export const getMT5Metadata = () =>
+  api.get<{ groups: string[]; countries: string[]; accounts: { login: string; name: string; group: string; country: string }[] }>("/accounts/mt5-metadata");
+
 // Reports
 export const getReportSummary = (params?: Record<string, unknown>) =>
   api.get("/reports/summary", { params });

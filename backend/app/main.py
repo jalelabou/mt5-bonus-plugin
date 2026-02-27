@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
-from app.api import auth, campaigns, bonuses, accounts, reports, audit, triggers
+from app.api import auth, campaigns, bonuses, accounts, reports, audit, triggers, monitoring
 from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -50,17 +50,20 @@ app.include_router(accounts.router)
 app.include_router(reports.router)
 app.include_router(audit.router)
 app.include_router(triggers.router)
+app.include_router(monitoring.router)
 
 
 @app.get("/api/health")
 async def health():
     from app.tasks.scheduler import scheduler
     from app.gateway import gateway
+    monitor_job = scheduler.get_job("account_monitor")
     return {
         "status": "ok",
         "service": "mt5-bonus-plugin",
         "scheduler_running": scheduler.running,
         "gateway_mode": "real" if hasattr(gateway, "connect") else "mock",
+        "monitor_active": monitor_job is not None,
     }
 
 

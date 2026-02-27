@@ -21,14 +21,18 @@ async def process_deal_event(db: AsyncSession, deal: MT5Deal):
 
 
 async def process_withdrawal_event(db: AsyncSession, mt5_login: str, amount: float):
+    from app.services.bonus_engine import cancel_bonus
+
     result = await db.execute(
         select(Bonus).where(
             Bonus.mt5_login == mt5_login,
             Bonus.status == BonusStatus.ACTIVE,
-            Bonus.bonus_type == "C",
         )
     )
     bonuses = result.scalars().all()
 
     for bonus in bonuses:
-        await handle_withdrawal(db, bonus, amount)
+        if bonus.bonus_type == "C":
+            await handle_withdrawal(db, bonus, amount)
+        else:
+            await cancel_bonus(db, bonus, reason=f"withdrawal:{amount:.2f}")

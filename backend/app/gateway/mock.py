@@ -2,13 +2,14 @@ import time
 import random
 from typing import Dict, List, Optional
 
-from app.gateway.interface import MT5Account, MT5Deal, MT5Gateway
+from app.gateway.interface import MT5Account, MT5BalanceDeal, MT5Deal, MT5Gateway
 
 
 class MockMT5Gateway(MT5Gateway):
     def __init__(self):
         self.accounts: Dict[str, MT5Account] = {}
         self.deals: Dict[str, List[MT5Deal]] = {}
+        self._balance_deals: Dict[str, List[MT5BalanceDeal]] = {}
         self._deal_counter = 1000
         self._seed_accounts()
 
@@ -81,9 +82,42 @@ class MockMT5Gateway(MT5Gateway):
             deals = [d for d in deals if d.timestamp >= from_timestamp]
         return deals
 
+    async def close_all_positions(self, login: str) -> bool:
+        return True
+
+    async def get_all_logins(self) -> List[str]:
+        return list(self.accounts.keys())
+
+    async def get_all_groups(self) -> List[str]:
+        return list({a.group for a in self.accounts.values()})
+
     async def get_account_group(self, login: str) -> Optional[str]:
         acct = self.accounts.get(login)
         return acct.group if acct else None
+
+    async def get_balance_deals(
+        self, login: str, from_timestamp: Optional[float] = None
+    ) -> List[MT5BalanceDeal]:
+        deals = self._balance_deals.get(login, [])
+        if from_timestamp:
+            deals = [d for d in deals if d.timestamp >= from_timestamp]
+        return deals
+
+    def simulate_deposit(self, login: str, amount: float) -> MT5BalanceDeal:
+        self._deal_counter += 1
+        deal = MT5BalanceDeal(
+            deal_id=str(self._deal_counter),
+            login=login,
+            amount=amount,
+            timestamp=time.time(),
+            comment="Deposit",
+        )
+        self._balance_deals.setdefault(login, []).append(deal)
+        acct = self.accounts.get(login)
+        if acct:
+            acct.balance += amount
+            acct.equity += amount
+        return deal
 
     def simulate_deal(self, login: str, symbol: str = "EURUSD", lots: float = 1.0) -> MT5Deal:
         self._deal_counter += 1

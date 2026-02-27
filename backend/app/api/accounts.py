@@ -15,6 +15,34 @@ from app.schemas.bonus import BonusRead
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
+@router.get("/mt5-metadata")
+async def mt5_metadata(
+    user: AdminUser = Depends(get_current_user),
+):
+    """Return all MT5 groups, countries, and accounts for form dropdowns."""
+    # Get all groups from MT5 server (not just from existing accounts)
+    all_groups = await gateway.get_all_groups()
+
+    all_logins = await gateway.get_all_logins()
+    countries = set()
+    accounts = []
+    for login in all_logins:
+        acct = await gateway.get_account_info(str(login))
+        if acct:
+            countries.add(acct.country)
+            accounts.append({
+                "login": acct.login,
+                "name": acct.name,
+                "group": acct.group,
+                "country": acct.country,
+            })
+    return {
+        "groups": sorted(set(all_groups)),
+        "countries": sorted(countries),
+        "accounts": accounts,
+    }
+
+
 @router.get("/{login}")
 async def account_lookup(
     login: str,

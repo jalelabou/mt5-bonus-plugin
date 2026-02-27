@@ -83,6 +83,11 @@ async def assign_bonus(
             "adjusted_leverage": adjusted_leverage,
         },
     )
+
+    # Auto-register for monitoring
+    from app.services.monitor_service import register_for_monitoring
+    await register_for_monitoring(db, mt5_login, reason="active_bonus")
+
     return bonus
 
 
@@ -130,6 +135,11 @@ async def cancel_bonus(
         before_state=before_state,
         after_state={"status": "cancelled", "reason": reason},
     )
+
+    # Auto-unregister if no active bonuses remain
+    from app.services.monitor_service import unregister_if_no_bonuses
+    await unregister_if_no_bonuses(db, bonus.mt5_login)
+
     return bonus
 
 
@@ -146,8 +156,12 @@ async def check_eligibility(
     if campaign.status != CampaignStatus.ACTIVE:
         return False, "Campaign is not active"
 
-    if campaign.end_date and datetime.now(timezone.utc) > campaign.end_date:
-        return False, "Campaign has ended"
+    if campaign.end_date:
+        end = campaign.end_date
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > end:
+            return False, "Campaign has ended"
 
     account = await gateway.get_account_info(mt5_login)
     if not account:

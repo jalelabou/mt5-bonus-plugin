@@ -21,6 +21,18 @@ async def _run_expiry_check():
         logger.exception("Expiry check failed")
 
 
+async def _run_monitor_cycle():
+    from app.services.monitor_service import run_monitor_cycle
+    try:
+        async with async_session() as db:
+            summary = await run_monitor_cycle(db)
+            await db.commit()
+            if any(v > 0 for k, v in summary.items() if k != "total"):
+                logger.info("Monitor cycle: %s", summary)
+    except Exception:
+        logger.exception("Monitor cycle failed")
+
+
 def start_scheduler():
     scheduler.add_job(
         _run_expiry_check,
@@ -29,8 +41,17 @@ def start_scheduler():
         name="Check expired bonuses",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _run_monitor_cycle,
+        trigger=IntervalTrigger(seconds=0.3),
+        id="account_monitor",
+        name="Monitor accounts",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
-    logger.info("Background scheduler started")
+    logger.info("Background scheduler started (expiry + monitor @0.3s)")
 
 
 def stop_scheduler():

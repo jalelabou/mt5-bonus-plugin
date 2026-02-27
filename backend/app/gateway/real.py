@@ -3,7 +3,7 @@ from typing import List, Optional
 
 import httpx
 
-from app.gateway.interface import MT5Account, MT5Deal, MT5Gateway
+from app.gateway.interface import MT5Account, MT5BalanceDeal, MT5Deal, MT5Gateway
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class RealMT5Gateway(MT5Gateway):
         if not self._token:
             await self.connect()
 
-    async def _get(self, path: str, **params) -> httpx.Response:
+    async def _get(self, path: str, _retry: bool = True, **params) -> httpx.Response:
         await self._ensure_connected()
         params["id"] = self._token
         resp = await self._client.get(f"{self._bridge_url}{path}", params=params)
@@ -74,9 +74,17 @@ class RealMT5Gateway(MT5Gateway):
                 err = resp.json()
                 code = err.get("code", "")
                 msg = err.get("message", resp.text)
-                raise MT5ManagerAPIError(msg, code=code, status_code=201)
             except (ValueError, KeyError):
-                raise MT5ManagerAPIError(resp.text, status_code=201)
+                code = ""
+                msg = resp.text
+            # Auto-reconnect on auth/token errors and retry once
+            if _retry and ("AUTH" in code.upper() or "NOT_FOUND" in code.upper()
+                           or "INVALID" in code.upper() or resp.status_code in (401, 403)):
+                logger.warning("MT5 token may be expired, reconnecting... (code=%s)", code)
+                self._token = None
+                await self.connect()
+                return await self._get(path, _retry=False, **params)
+            raise MT5ManagerAPIError(msg, code=code, status_code=201)
         return resp
 
     # -- Interface methods --
@@ -185,6 +193,82 @@ class RealMT5Gateway(MT5Gateway):
             logger.exception("MT5 get_trade_history failed: login=%s", login)
             return []
 
+    async def close_all_positions(self, login: str) -> bool:
+        try:
+            resp = await self._get("/OrderCloseAll", logins=int(login))
+            logger.info("MT5 close all positions: login=%s result=%s", login, resp.text.strip())
+            return True
+        except MT5ManagerAPIError:
+            logger.exception("MT5 close_all_positions failed: login=%s", login)
+            return False
+
+    async def get_all_logins(self) -> List[str]:
+        try:
+            resp = await self._get("/Accounts")
+            data = resp.json()
+            if isinstance(data, list):
+                return [str(login) for login in data]
+            return []
+        except MT5ManagerAPIError:
+            logger.exception("MT5 get_all_logins failed")
+            return []
+
+    async def get_all_groups(self) -> List[str]:
+        try:
+            resp = await self._get("/UserGroups")
+            data = resp.json()
+            if isinstance(data, list):
+                return [g.get("group", "") if isinstance(g, dict) else str(g) for g in data]
+            if isinstance(data, dict):
+                return [data.get("group", "")]
+            return []
+        except MT5ManagerAPIError:
+            logger.exception("MT5 get_all_groups failed")
+            return []
+
     async def get_account_group(self, login: str) -> Optional[str]:
         account = await self.get_account_info(login)
         return account.group if account else None
+
+    async def get_balance_deals(
+        self, login: str, from_timestamp: Optional[float] = None
+    ) -> List[MT5BalanceDeal]:
+        from datetime import datetime, timezone, timedelta
+        try:
+            if from_timestamp:
+                dt_from = datetime.fromtimestamp(from_timestamp, tz=timezone.utc)
+            else:
+                dt_from = datetime.now(timezone.utc) - timedelta(days=1)
+            dt_to = datetime.now(timezone.utc)
+
+            resp = await self._get("/DealHistory",
+                login=int(login),
+                **{"from": dt_from.strftime("%Y-%m-%dT%H:%M:%S"),
+                   "to": dt_to.strftime("%Y-%m-%dT%H:%M:%S")})
+            data = resp.json()
+            if not isinstance(data, list):
+                return []
+
+            deals = []
+            for d in data:
+                action = str(d.get("action", "")).upper()
+                # Only balance operations (deposits and withdrawals)
+                # MT5 API returns "BALANCE" or "DEAL_BALANCE" depending on version
+                if action not in ("BALANCE", "DEAL_BALANCE"):
+                    continue
+                # Skip credit/bonus operations (managed by our bonus system)
+                comment = str(d.get("comment", ""))
+                if "credit" in comment.lower() or "bonus" in comment.lower():
+                    continue
+                amount = float(d.get("profit", 0))
+                deals.append(MT5BalanceDeal(
+                    deal_id=str(d.get("deal", d.get("ticket", ""))),
+                    login=str(d.get("login", login)),
+                    amount=amount,
+                    timestamp=float(d.get("time", 0)),
+                    comment=comment,
+                ))
+            return deals
+        except MT5ManagerAPIError:
+            logger.exception("MT5 get_balance_deals failed: login=%s", login)
+            return []
