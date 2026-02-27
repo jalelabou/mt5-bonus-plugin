@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.gateway.mock import gateway
+from app.gateway import gateway
 from app.models.audit_log import ActorType, EventType
 from app.models.bonus import Bonus, BonusStatus
 from app.models.campaign import Campaign, CampaignStatus

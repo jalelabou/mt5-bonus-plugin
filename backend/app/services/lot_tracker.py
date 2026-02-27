@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.gateway.interface import MT5Deal
-from app.gateway.mock import gateway
+from app.gateway import gateway
 from app.models.audit_log import EventType
 from app.models.bonus import Bonus, BonusLotProgress, BonusStatus
 from app.models.campaign import Campaign, LotTrackingScope
