@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Row, Col, Card, Statistic, Typography, Spin } from "antd";
-import { FundOutlined, GiftOutlined, DollarOutlined, SwapOutlined } from "@ant-design/icons";
-import { getCampaigns, getBonuses } from "../api/endpoints";
+import { FundOutlined, GiftOutlined, CheckCircleOutlined, SwapOutlined } from "@ant-design/icons";
+import { getCampaigns, getBonuses, getHealth } from "../api/endpoints";
 
 export default function Dashboard() {
-  const [stats, setStats] = useState({ campaigns: 0, activeBonuses: 0, totalAmount: 0, convertedCount: 0 });
+  const [stats, setStats] = useState({ campaigns: 0, activeBonuses: 0, convertedCount: 0 });
+  const [systemOk, setSystemOk] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -12,14 +13,15 @@ export default function Dashboard() {
       getCampaigns({ status: "active", page_size: 1 }),
       getBonuses({ status: "active", page_size: 1 }),
       getBonuses({ status: "converted", page_size: 1 }),
+      getHealth().catch(() => ({ data: { status: "error", scheduler_running: false } })),
     ])
-      .then(([campRes, bonusRes, convertedRes]) => {
+      .then(([campRes, bonusRes, convertedRes, healthRes]) => {
         setStats({
           campaigns: campRes.data.total,
           activeBonuses: bonusRes.data.total,
-          totalAmount: 0,
           convertedCount: convertedRes.data.total,
         });
+        setSystemOk(healthRes.data.status === "ok" && healthRes.data.scheduler_running);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -48,7 +50,12 @@ export default function Dashboard() {
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="System Status" value="Online" prefix={<DollarOutlined />} valueStyle={{ color: "#3f8600" }} />
+            <Statistic
+              title="System Status"
+              value={systemOk === null ? "Checking..." : systemOk ? "Online" : "Degraded"}
+              prefix={<CheckCircleOutlined />}
+              valueStyle={{ color: systemOk ? "#3f8600" : "#cf1322" }}
+            />
           </Card>
         </Col>
       </Row>

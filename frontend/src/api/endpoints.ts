@@ -88,5 +88,8 @@ export const triggerRegistration = (mt5_login: string) =>
 export const triggerPromoCode = (mt5_login: string, promo_code: string, deposit_amount?: number) =>
   api.post("/triggers/promo-code", { mt5_login, promo_code, deposit_amount });
 
+// Health
+export const getHealth = () => api.get<{ status: string; scheduler_running: boolean }>("/health");
+
 // Gateway
 export const getMockAccounts = () => api.get("/gateway/accounts");
