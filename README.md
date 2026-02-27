@@ -9,17 +9,31 @@ Broker-side bonus campaign management system for MetaTrader 5. Create and manage
 - **Type B - Fixed Leverage**: Credit posted, leverage unchanged. Simple credit add/remove.
 - **Type C - Convertible**: Non-withdrawable credit converts to real balance as the client trades. Linear conversion per lot. Withdrawal cancels unconverted credit.
 
+### Automatic Account Monitoring
+The system continuously monitors all MT5 accounts in real-time (every 0.3 seconds):
+
+- **Auto-Discovery**: New MT5 accounts are automatically detected and registered for monitoring. No manual setup needed.
+- **Deposit Detection**: Balance increases are detected via snapshot comparison and confirmed through MT5 deal history. Matching `auto_deposit` campaigns automatically assign bonuses.
+- **Withdrawal Detection**: Balance decreases trigger automatic cancellation of all active bonuses and credit removal.
+- **Drawdown Protection**: When a trader's equity drops to or below their credit (meaning they've lost all their own funds), the system automatically:
+  1. Closes all open positions
+  2. Cancels all active bonuses
+  3. Removes all credit (with retry logic for MT5 settlement)
+- **Type C Trade Tracking**: Trades are automatically fetched and processed for convertible bonus lot requirements.
+- **Error Resilience**: Accounts with 5+ consecutive errors are paused. Admins can reset them via the API.
+
 ### Campaign Management
 - Create campaigns with configurable bonus type, percentage, deposit thresholds, expiry, and targeting rules
-- Campaign lifecycle: Draft → Active → Paused → Ended → Archived
+- Campaign lifecycle: Draft -> Active -> Paused -> Ended -> Archived
 - Target by MT5 group, country, deposit range
 - One-per-account and max concurrent bonus limits
+- **Scan MT5** button to refresh available groups and countries from the live MT5 server
 
 ### Trigger System
-- **Auto on Deposit**: Fires when a qualifying deposit is detected
+- **Auto on Deposit**: Fires automatically when a qualifying deposit is detected by the monitor
 - **Promo Code**: Validated against active campaigns
 - **On Registration**: Fires when a new MT5 account is created
-- **Agent/Group Code**: IB agent codes trigger bonuses for referred clients
+- **Agent/Group Code**: IB agent codes trigger bonuses for referred clients (configurable per campaign)
 
 ### Admin Dashboard
 - **Dashboard**: Overview stats (active campaigns, bonuses, conversions)
@@ -39,10 +53,11 @@ Broker-side bonus campaign management system for MetaTrader 5. Create and manage
 
 ## Tech Stack
 
-- **Backend**: Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic
+- **Backend**: Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic, APScheduler
 - **Frontend**: React 19, TypeScript, Ant Design 6, Vite
 - **Database**: SQLite (dev) / PostgreSQL (production)
 - **Auth**: JWT with refresh tokens, bcrypt password hashing
+- **MT5 Gateway**: Pluggable interface — mock gateway for development, real MT5 Manager REST API bridge for production
 
 ## Quick Start
 
@@ -60,6 +75,8 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 API docs available at http://localhost:8000/docs
+
+By default, the backend starts in **mock mode** with 10 simulated MT5 accounts. To connect to a real MT5 server, see [Production Setup](#production-setup).
 
 ### Frontend
 
@@ -80,11 +97,28 @@ npm run dev           # Starts on http://localhost:5173
 
 ### Mock MT5 Accounts
 
-10 test accounts are pre-loaded (logins 10001–10010) with varying balances, leverage, and groups. View them at `GET /api/gateway/accounts`.
+10 test accounts are pre-loaded (logins 10001-10010) with varying balances, leverage, and groups. View them at `GET /api/gateway/accounts`.
 
 ## Production Setup
 
-For production, switch to PostgreSQL:
+### Connecting to a Real MT5 Server
+
+The plugin connects to MT5 via a **Manager REST API bridge** (mtapi-style HTTP wrapper around the MT5 Manager API). Set the following environment variables in `backend/.env`:
+
+```bash
+# MT5 Manager REST API Bridge
+MT5_BRIDGE_URL=http://your-bridge-server:5000
+MT5_SERVER=your-mt5-server-ip
+MT5_MANAGER_LOGIN=your-manager-login
+MT5_MANAGER_PASSWORD=your-manager-password
+MT5_REQUEST_TIMEOUT_SECONDS=30
+```
+
+When these are set, the backend automatically uses the real gateway instead of the mock. The gateway includes:
+- **Auto-reconnect**: If the MT5 token expires or is invalidated, the gateway automatically reconnects and retries the request.
+- **Error handling**: All MT5 API errors are caught and logged without crashing the monitor.
+
+### PostgreSQL (Recommended for Production)
 
 ```bash
 # docker-compose.yml included for PostgreSQL
@@ -93,6 +127,28 @@ docker compose up -d
 # Update backend/.env
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/mt5_bonus
 ```
+
+### Database Migrations
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `sqlite+aiosqlite:///./mt5_bonus.db` | Database connection string |
+| `SECRET_KEY` | `dev-secret-key-not-for-production` | JWT signing key (change in production!) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT access token lifetime |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | JWT refresh token lifetime |
+| `CORS_ORIGINS` | `["http://localhost:5173"]` | Allowed CORS origins |
+| `MT5_BRIDGE_URL` | (empty) | MT5 Manager REST API bridge URL |
+| `MT5_SERVER` | (empty) | MT5 server IP address |
+| `MT5_MANAGER_LOGIN` | (empty) | MT5 Manager login |
+| `MT5_MANAGER_PASSWORD` | (empty) | MT5 Manager password |
+| `MT5_REQUEST_TIMEOUT_SECONDS` | `30` | MT5 API request timeout |
 
 ## API Endpoints
 
@@ -122,6 +178,18 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/mt5_bonus
 - `POST /api/triggers/registration` — Registration event
 - `POST /api/triggers/promo-code` — Promo code redemption
 
+### Accounts
+- `GET /api/accounts/mt5-metadata` — All MT5 groups, countries, and accounts for form dropdowns
+- `GET /api/accounts/{login}` — Account lookup with bonus history and audit logs
+
+### Monitoring
+- `GET /api/monitoring/status` — System health (active/errored account counts, scheduler status)
+- `GET /api/monitoring/accounts` — List all monitored accounts with snapshots
+- `POST /api/monitoring/accounts/{login}/register` — Manually register an account for deposit monitoring
+- `POST /api/monitoring/accounts/{login}/reset-errors` — Reset error counter for a stuck account
+- `POST /api/monitoring/accounts/{login}/test-deposit` — Test deposit (triggers auto-detection)
+- `POST /api/monitoring/accounts/{login}/test-withdraw` — Test withdrawal (triggers auto-detection)
+
 ### Reports & Audit
 - `GET /api/reports/summary` — Bonus summary by campaign
 - `GET /api/reports/conversions` — Type C conversion progress
@@ -130,19 +198,39 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/mt5_bonus
 - `GET /api/reports/export` — CSV/Excel export
 - `GET /api/audit` — Audit log query
 
+## Background Jobs
+
+The backend runs two background jobs via APScheduler:
+
+| Job | Interval | Description |
+|-----|----------|-------------|
+| `account_monitor` | 0.3s | Polls all active MT5 accounts for deposits, withdrawals, drawdown, and trades |
+| `expiry_checker` | 1 hour | Cancels bonuses that have exceeded their expiry date |
+
+Both jobs are coalesced (`max_instances=1`) to prevent overlap if a cycle takes longer than the interval.
+
+## How Auto-Deposit Bonus Works
+
+1. **Campaign setup**: Create a campaign with trigger type "Auto on Deposit", set the bonus percentage, target groups/countries, and deposit thresholds.
+2. **Account discovery**: The monitor automatically discovers all MT5 accounts and registers them for polling.
+3. **Deposit detection**: Every 0.3s, the monitor compares each account's current balance against its stored snapshot. If balance increased (and credit didn't), it's a deposit.
+4. **Deal confirmation**: The system fetches balance deal history from MT5 to get exact deposit amounts.
+5. **Bonus assignment**: For each deposit, `process_deposit_trigger` checks all active `auto_deposit` campaigns. If the account and deposit match the campaign's eligibility rules (group, country, amount range), the bonus is assigned automatically.
+6. **Credit posted**: The bonus credit is posted to the MT5 account via the Manager API, and the snapshot is updated.
+
 ## Project Structure
 
 ```
 ├── backend/
 │   ├── app/
-│   │   ├── api/          # REST endpoints
+│   │   ├── api/          # REST endpoints (auth, campaigns, bonuses, triggers, accounts, monitoring)
 │   │   ├── config/       # Settings, JWT, security
 │   │   ├── db/           # Database engine, base models
-│   │   ├── gateway/      # MT5 Gateway interface + mock
-│   │   ├── models/       # SQLAlchemy models
+│   │   ├── gateway/      # MT5 Gateway interface + mock + real implementation
+│   │   ├── models/       # SQLAlchemy models (bonus, campaign, user, audit_log, monitored_account)
 │   │   ├── schemas/      # Pydantic request/response schemas
-│   │   ├── services/     # Business logic (bonus engine, triggers, lot tracking)
-│   │   ├── tasks/        # Background tasks (expiry checker, event processor)
+│   │   ├── services/     # Business logic (bonus engine, triggers, lot tracking, monitor)
+│   │   ├── tasks/        # Background tasks (expiry checker, event processor, scheduler)
 │   │   └── main.py       # FastAPI app entry point
 │   ├── alembic/          # Database migrations
 │   ├── seed.py           # Test data seeder
