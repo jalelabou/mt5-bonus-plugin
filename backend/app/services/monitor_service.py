@@ -173,10 +173,8 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
                 "closing all trades and removing credit",
                 mon.mt5_login, account.equity, account.credit,
             )
-            # Step 1: Close all open positions
-            await gateway.close_all_positions(mon.mt5_login)
-            # Step 2: Cancel all bonuses and remove credit
-            await _cancel_all_bonuses_and_clear_credit(
+            # Close positions and cancel bonuses + remove credit
+            await _close_positions_and_clear_credit(
                 db, mon.mt5_login, reason=reason,
             )
             actions["drawdowns"] += 1
@@ -185,6 +183,22 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
             if account is None:
                 mon.consecutive_errors += 1
                 return actions
+
+        # === ORPHANED CREDIT CLEANUP ===
+        # If MT5 still has credit but no active bonuses in DB, keep trying to remove it.
+        # This catches cases where previous credit removal failed (e.g. positions were open).
+        if account.credit > 0.01:
+            active_bonuses = await _get_active_bonuses(db, mon.mt5_login)
+            if not active_bonuses:
+                logger.info(
+                    "Orphaned credit cleanup: login=%s credit=%.2f (no active bonuses)",
+                    mon.mt5_login, account.credit,
+                )
+                await _force_remove_credit(mon.mt5_login)
+                account = await gateway.get_account_info(mon.mt5_login)
+                if account is None:
+                    mon.consecutive_errors += 1
+                    return actions
 
         # === TYPE C TRADE TRACKING ===
         type_c_bonuses = await _get_active_type_c_bonuses(db, mon.mt5_login)
@@ -269,16 +283,53 @@ async def run_monitor_cycle(db: AsyncSession) -> dict:
     return summary
 
 
+async def _close_positions_and_clear_credit(
+    db: AsyncSession, mt5_login: str, reason: str
+):
+    """Close all positions, cancel all bonuses, then remove credit with verification."""
+    import asyncio as _asyncio
+
+    # Step 1: Close all open positions (try multiple times)
+    for attempt in range(3):
+        await gateway.close_all_positions(mt5_login)
+        await _asyncio.sleep(1.5)
+        # Check if positions are actually closed (equity should be ~balance+credit)
+        acct = await gateway.get_account_info(mt5_login)
+        if acct and abs(acct.equity - acct.balance - acct.credit) < 1.0:
+            logger.info("Positions closed for %s (attempt %d)", mt5_login, attempt + 1)
+            break
+        logger.warning(
+            "Positions may still be open for %s: equity=%.2f, balance+credit=%.2f (attempt %d)",
+            mt5_login, acct.equity if acct else 0, (acct.balance + acct.credit) if acct else 0, attempt + 1,
+        )
+
+    # Step 2: Cancel all bonuses in DB
+    await _cancel_all_bonuses_in_db(db, mt5_login, reason)
+
+    # Step 3: Remove credit with verification
+    await _force_remove_credit(mt5_login)
+
+    # Unregister from monitoring if no bonuses left
+    await unregister_if_no_bonuses(db, mt5_login)
+
+
 async def _cancel_all_bonuses_and_clear_credit(
     db: AsyncSession, mt5_login: str, reason: str
 ):
-    """Cancel all active bonuses, then wipe any remaining credit from MT5 in one shot."""
+    """Cancel all active bonuses, then wipe any remaining credit from MT5."""
+    await _cancel_all_bonuses_in_db(db, mt5_login, reason)
+    await _force_remove_credit(mt5_login)
+    await unregister_if_no_bonuses(db, mt5_login)
+
+
+async def _cancel_all_bonuses_in_db(
+    db: AsyncSession, mt5_login: str, reason: str
+):
+    """Mark all active bonuses as cancelled in the DB."""
     active_bonuses = await _get_active_bonuses(db, mt5_login)
 
-    # Mark all bonuses as cancelled in DB without individual MT5 credit removal
     now = datetime.now(timezone.utc)
     for bonus in active_bonuses:
-        # Restore leverage for Type A
         if bonus.bonus_type == "A" and bonus.original_leverage:
             from app.services.leverage_service import restore_leverage
             await restore_leverage(gateway, bonus.mt5_login, bonus.original_leverage)
@@ -302,27 +353,49 @@ async def _cancel_all_bonuses_and_clear_credit(
 
     await db.flush()
 
-    # Now remove ALL credit from MT5 in one operation (retry up to 3 times)
+
+async def _force_remove_credit(mt5_login: str):
+    """Remove all credit from MT5 account, retrying and verifying after each attempt."""
     import asyncio as _asyncio
-    for attempt in range(3):
+
+    for attempt in range(5):
         account = await gateway.get_account_info(mt5_login)
         if not account or account.credit <= 0.01:
-            break
+            logger.info("Credit cleared for %s (credit=%.2f)", mt5_login, account.credit if account else 0)
+            return
+
+        # If positions are still open (equity != balance + credit), close them first
+        if abs(account.equity - account.balance - account.credit) > 1.0:
+            logger.info(
+                "Positions still open for %s before credit removal, closing... (attempt %d)",
+                mt5_login, attempt + 1,
+            )
+            await gateway.close_all_positions(mt5_login)
+            await _asyncio.sleep(2)
+            continue
+
         logger.info(
-            "Clearing all credit: login=%s amount=%.2f (attempt %d)",
+            "Removing credit: login=%s amount=%.2f (attempt %d)",
             mt5_login, account.credit, attempt + 1,
         )
-        success = await gateway.remove_credit(
-            mt5_login, account.credit, f"Clear all: {reason}"
+        await gateway.remove_credit(
+            mt5_login, account.credit,
+            "Bonus cancelled - credit removal",
         )
-        if success:
-            break
-        # Wait briefly for MT5 to settle (e.g. after closing trades)
-        await _asyncio.sleep(1)
+        # Wait for MT5 to process, then verify
+        await _asyncio.sleep(1.5)
 
-    # Unregister from monitoring if no bonuses left
-    from app.services.monitor_service import unregister_if_no_bonuses
-    await unregister_if_no_bonuses(db, mt5_login)
+        # Verify credit was actually removed
+        check = await gateway.get_account_info(mt5_login)
+        if check and check.credit <= 0.01:
+            logger.info("Credit verified removed for %s", mt5_login)
+            return
+        logger.warning(
+            "Credit removal not confirmed for %s: credit still %.2f (attempt %d)",
+            mt5_login, check.credit if check else -1, attempt + 1,
+        )
+
+    logger.error("Failed to remove credit for %s after 5 attempts", mt5_login)
 
 
 async def _get_active_bonuses(db: AsyncSession, mt5_login: str):
