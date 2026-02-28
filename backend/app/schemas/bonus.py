@@ -10,6 +10,7 @@ class BonusAssign(BaseModel):
     campaign_id: int
     mt5_login: str
     deposit_amount: Optional[float] = None
+    override_eligibility: bool = False
 
 
 class BonusCancelRequest(BaseModel):

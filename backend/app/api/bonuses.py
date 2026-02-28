@@ -19,7 +19,7 @@ from app.schemas.bonus import (
     LotProgressRead,
 )
 from app.schemas.common import PaginatedResponse
-from app.services.bonus_engine import assign_bonus, cancel_bonus, check_eligibility
+from app.services.bonus_engine import assign_bonus, cancel_bonus, check_eligibility, check_eligibility_all
 from app.services.lot_tracker import process_deal
 
 router = APIRouter(prefix="/api/bonuses", tags=["bonuses"])
@@ -106,6 +106,24 @@ async def get_bonus(
     return item
 
 
+@router.post("/check-eligibility")
+async def check_eligibility_endpoint(
+    body: BonusAssign,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_roles(
+        AdminRole.SUPER_ADMIN, AdminRole.CAMPAIGN_MANAGER, AdminRole.SUPPORT_AGENT
+    )),
+):
+    """Return all eligibility failures so the frontend can show them for override confirmation."""
+    result = await db.execute(select(Campaign).where(Campaign.id == body.campaign_id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    failures = await check_eligibility_all(db, campaign, body.mt5_login, body.deposit_amount)
+    return {"eligible": len(failures) == 0, "failures": failures}
+
+
 @router.post("/assign", response_model=BonusRead, status_code=201)
 async def assign_bonus_manual(
     body: BonusAssign,
@@ -119,9 +137,18 @@ async def assign_bonus_manual(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    eligible, reason = await check_eligibility(db, campaign, body.mt5_login, body.deposit_amount)
-    if not eligible:
-        raise HTTPException(status_code=400, detail=reason)
+    failures = await check_eligibility_all(db, campaign, body.mt5_login, body.deposit_amount)
+    if failures:
+        if not body.override_eligibility:
+            # Return 409 with all failures so the frontend can prompt for override
+            raise HTTPException(status_code=409, detail={
+                "message": "Eligibility checks failed",
+                "failures": failures,
+            })
+        # Override requested — block non-overridable failures
+        non_overridable = [f for f in failures if not f["overridable"]]
+        if non_overridable:
+            raise HTTPException(status_code=400, detail=non_overridable[0]["message"])
 
     bonus = await assign_bonus(db, campaign, body.mt5_login, body.deposit_amount, actor_id=user.id)
     item = BonusRead.model_validate(bonus)

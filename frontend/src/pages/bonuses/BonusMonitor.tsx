@@ -95,17 +95,49 @@ export default function BonusMonitor() {
     }
   };
 
-  const handleAssign = async () => {
+  const handleAssign = async (override = false) => {
     if (!assignData.campaign_id) { message.error("Select a campaign"); return; }
     if (!assignData.mt5_login) { message.error("Select an account"); return; }
     try {
-      await assignBonus(assignData);
+      await assignBonus({ ...assignData, override_eligibility: override });
       message.success("Bonus assigned");
       setAssignModal(false);
       setSelectedAccount(null);
       fetchData();
     } catch (err: any) {
-      message.error(err.response?.data?.detail || "Failed to assign");
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      // 409 = eligibility failures that can be overridden
+      if (status === 409 && detail?.failures) {
+        const failures = detail.failures as { check: string; message: string; overridable: boolean }[];
+        const overridable = failures.filter((f) => f.overridable);
+        const nonOverridable = failures.filter((f) => !f.overridable);
+        if (nonOverridable.length > 0) {
+          message.error(nonOverridable[0].message);
+          return;
+        }
+        Modal.confirm({
+          title: "Eligibility Override Required",
+          width: 520,
+          content: (
+            <div>
+              <p>The following eligibility checks failed:</p>
+              <ul style={{ paddingLeft: 20 }}>
+                {overridable.map((f, i) => (
+                  <li key={i} style={{ marginBottom: 4, color: "#cf1322" }}>{f.message}</li>
+                ))}
+              </ul>
+              <p style={{ marginTop: 12, fontWeight: 600 }}>Do you want to override and assign the bonus anyway?</p>
+            </div>
+          ),
+          okText: "Override & Assign",
+          okButtonProps: { danger: true },
+          cancelText: "Cancel",
+          onOk: () => handleAssign(true),
+        });
+      } else {
+        message.error(typeof detail === "string" ? detail : detail?.message || "Failed to assign");
+      }
     }
   };
 
@@ -156,7 +188,7 @@ export default function BonusMonitor() {
       </Space>
       <Table columns={columns} dataSource={bonuses} rowKey="id" loading={loading} pagination={{ current: page, total, pageSize: 25, onChange: setPage }} />
 
-      <Modal title="Assign Bonus" open={assignModal} onOk={handleAssign} onCancel={() => { setAssignModal(false); setSelectedAccount(null); }} width={600}>
+      <Modal title="Assign Bonus" open={assignModal} onOk={() => handleAssign(false)} onCancel={() => { setAssignModal(false); setSelectedAccount(null); }} width={600}>
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <div>
             <Typography.Text strong style={{ display: "block", marginBottom: 4 }}>MT5 Account</Typography.Text>

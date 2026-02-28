@@ -42,7 +42,7 @@ export const getBonuses = (params?: Record<string, unknown>) =>
 export const getBonus = (id: number) =>
   api.get<BonusDetail>(`/bonuses/${id}`);
 
-export const assignBonus = (data: { campaign_id: number; mt5_login: string; deposit_amount?: number }) =>
+export const assignBonus = (data: { campaign_id: number; mt5_login: string; deposit_amount?: number; override_eligibility?: boolean }) =>
   api.post<Bonus>("/bonuses/assign", data);
 
 export const cancelBonus = (id: number, reason: string) =>

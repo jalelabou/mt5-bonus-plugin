@@ -35,6 +35,7 @@ async def mt5_metadata(
                 "name": acct.name,
                 "group": acct.group,
                 "country": acct.country,
+                "lead_source": acct.lead_source,
             })
     return {
         "groups": sorted(set(all_groups)),
@@ -88,6 +89,7 @@ async def account_lookup(
             "leverage": account.leverage,
             "group": account.group,
             "country": account.country,
+            "lead_source": account.lead_source,
         },
         "bonuses": bonuses,
         "audit_logs": audit_logs,

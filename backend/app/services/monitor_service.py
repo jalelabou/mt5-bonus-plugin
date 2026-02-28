@@ -107,6 +107,8 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
             account.credit, mon.last_credit,
         )
         if balance_delta > 0.01 and account.credit <= mon.last_credit + 0.01:
+            # Use MT5 Lead Source field as agent code for agent_code triggers
+            agent_code = account.lead_source or None
             # Try to get individual deposits from deal history
             balance_deals = await gateway.get_balance_deals(
                 mon.mt5_login, from_timestamp=mon.last_deal_timestamp
@@ -116,20 +118,20 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
             if deposits_found:
                 for deal in deposits_found:
                     logger.info(
-                        "Auto-deposit detected: login=%s amount=%.2f deal=%s",
-                        mon.mt5_login, deal.amount, deal.deal_id,
+                        "Auto-deposit detected: login=%s amount=%.2f deal=%s lead_source=%s",
+                        mon.mt5_login, deal.amount, deal.deal_id, agent_code,
                     )
-                    await process_deposit_trigger(db, mon.mt5_login, deal.amount)
+                    await process_deposit_trigger(db, mon.mt5_login, deal.amount, agent_code)
                     actions["deposits"] += 1
                     if deal.timestamp > mon.last_deal_timestamp:
                         mon.last_deal_timestamp = deal.timestamp
             else:
                 # Deal history didn't return details — use balance delta directly
                 logger.info(
-                    "Auto-deposit detected (via snapshot): login=%s amount=%.2f",
-                    mon.mt5_login, balance_delta,
+                    "Auto-deposit detected (via snapshot): login=%s amount=%.2f lead_source=%s",
+                    mon.mt5_login, balance_delta, agent_code,
                 )
-                await process_deposit_trigger(db, mon.mt5_login, balance_delta)
+                await process_deposit_trigger(db, mon.mt5_login, balance_delta, agent_code)
                 actions["deposits"] += 1
 
             # Re-fetch account after trigger may have posted credit
@@ -145,12 +147,21 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
                 "Withdrawal detected: login=%s amount=%.2f",
                 mon.mt5_login, withdrawal_amount,
             )
-            await _cancel_all_bonuses_and_clear_credit(
-                db, mon.mt5_login,
-                reason=f"withdrawal_detected:{withdrawal_amount:.2f}",
-            )
+            # Proportional withdrawal: reduce credit (and leverage) by the same
+            # ratio as the withdrawal relative to the pre-withdrawal balance.
+            withdrawal_ratio = withdrawal_amount / mon.last_balance if mon.last_balance > 0 else 1.0
+            if withdrawal_ratio >= 1.0:
+                # Full withdrawal — cancel everything
+                await _cancel_all_bonuses_and_clear_credit(
+                    db, mon.mt5_login,
+                    reason=f"withdrawal_detected:{withdrawal_amount:.2f}",
+                )
+            else:
+                await _proportional_reduce_bonuses(
+                    db, mon.mt5_login, withdrawal_ratio, withdrawal_amount,
+                )
             actions["withdrawals"] += 1
-            # Re-fetch after credit removal
+            # Re-fetch after credit adjustment
             account = await gateway.get_account_info(mon.mt5_login)
             if account is None:
                 mon.consecutive_errors += 1
@@ -187,18 +198,28 @@ async def poll_single_account(db: AsyncSession, mon: MonitoredAccount) -> dict:
         # === ORPHANED CREDIT CLEANUP ===
         # If MT5 still has credit but no active bonuses in DB, keep trying to remove it.
         # This catches cases where previous credit removal failed (e.g. positions were open).
+        # SKIP if credit is higher than our last snapshot — that means a bonus was
+        # just assigned and the DB transaction hasn't committed yet (race condition).
         if account.credit > 0.01:
-            active_bonuses = await _get_active_bonuses(db, mon.mt5_login)
-            if not active_bonuses:
-                logger.info(
-                    "Orphaned credit cleanup: login=%s credit=%.2f (no active bonuses)",
-                    mon.mt5_login, account.credit,
+            credit_increased = account.credit > mon.last_credit + 0.01
+            if credit_increased:
+                logger.debug(
+                    "Skipping orphaned credit check for %s: credit %.2f > snapshot %.2f "
+                    "(likely pending bonus assignment)",
+                    mon.mt5_login, account.credit, mon.last_credit,
                 )
-                await _force_remove_credit(mon.mt5_login)
-                account = await gateway.get_account_info(mon.mt5_login)
-                if account is None:
-                    mon.consecutive_errors += 1
-                    return actions
+            else:
+                active_bonuses = await _get_active_bonuses(db, mon.mt5_login)
+                if not active_bonuses:
+                    logger.info(
+                        "Orphaned credit cleanup: login=%s credit=%.2f (no active bonuses)",
+                        mon.mt5_login, account.credit,
+                    )
+                    await _force_remove_credit(mon.mt5_login)
+                    account = await gateway.get_account_info(mon.mt5_login)
+                    if account is None:
+                        mon.consecutive_errors += 1
+                        return actions
 
         # === TYPE C TRADE TRACKING ===
         type_c_bonuses = await _get_active_type_c_bonuses(db, mon.mt5_login)
@@ -311,6 +332,88 @@ async def _close_positions_and_clear_credit(
 
     # Unregister from monitoring if no bonuses left
     await unregister_if_no_bonuses(db, mt5_login)
+
+
+async def _proportional_reduce_bonuses(
+    db: AsyncSession, mt5_login: str, withdrawal_ratio: float, withdrawal_amount: float,
+):
+    """Reduce active bonuses proportionally instead of cancelling them outright."""
+    import math
+    from app.models.audit_log import ActorType, EventType
+    from app.services.audit_service import log_event
+
+    active_bonuses = await _get_active_bonuses(db, mt5_login)
+    if not active_bonuses:
+        return
+
+    for bonus in active_bonuses:
+        old_credit = bonus.bonus_amount - bonus.amount_converted
+        if old_credit <= 0.01:
+            continue
+
+        credit_reduction = round(old_credit * withdrawal_ratio, 2)
+        new_credit = round(old_credit - credit_reduction, 2)
+
+        if new_credit < 0.01:
+            # Effectively zero — full cancel this bonus
+            bonus.status = BonusStatus.CANCELLED
+            bonus.cancelled_at = datetime.now(timezone.utc)
+            bonus.cancellation_reason = f"withdrawal_full:{withdrawal_amount:.2f}"
+            credit_reduction = old_credit
+            new_credit = 0.0
+
+        before_state = {
+            "bonus_amount": bonus.bonus_amount,
+            "credit_before": old_credit,
+            "original_leverage": bonus.original_leverage,
+            "adjusted_leverage": bonus.adjusted_leverage,
+        }
+
+        # Remove proportional credit from MT5
+        if credit_reduction > 0.01:
+            await gateway.remove_credit(
+                mt5_login, credit_reduction,
+                f"Partial withdrawal {withdrawal_ratio:.0%}",
+            )
+
+        # Update bonus_amount to reflect the reduced credit
+        bonus.bonus_amount = round(bonus.amount_converted + new_credit, 2)
+
+        # Type A: recalculate leverage based on new credit / new balance ratio
+        new_adjusted = bonus.adjusted_leverage
+        if bonus.bonus_type == "A" and bonus.original_leverage and new_credit > 0:
+            account = await gateway.get_account_info(mt5_login)
+            if account and account.balance > 0:
+                effective_pct = (new_credit / account.balance) * 100.0
+                multiplier = (effective_pct / 100.0) + 1.0
+                new_adjusted = math.floor(bonus.original_leverage / multiplier)
+                await gateway.set_leverage(mt5_login, new_adjusted)
+                bonus.adjusted_leverage = new_adjusted
+        elif bonus.bonus_type == "A" and new_credit <= 0.01 and bonus.original_leverage:
+            # Credit fully gone — restore original leverage
+            from app.services.leverage_service import restore_leverage
+            await restore_leverage(gateway, mt5_login, bonus.original_leverage)
+            new_adjusted = bonus.original_leverage
+
+        await log_event(
+            db,
+            event_type=EventType.PARTIAL_REDUCTION,
+            mt5_login=mt5_login,
+            campaign_id=bonus.campaign_id,
+            bonus_id=bonus.id,
+            actor_type=ActorType.SYSTEM,
+            before_state=before_state,
+            after_state={
+                "bonus_amount": bonus.bonus_amount,
+                "credit_after": new_credit,
+                "credit_removed": credit_reduction,
+                "withdrawal_ratio": round(withdrawal_ratio, 4),
+                "withdrawal_amount": withdrawal_amount,
+                "adjusted_leverage": new_adjusted,
+            },
+        )
+
+    await db.flush()
 
 
 async def _cancel_all_bonuses_and_clear_credit(

@@ -13,6 +13,7 @@ class MT5Account:
     group: str
     country: str
     name: str
+    lead_source: str = ""
 
 
 @dataclass

@@ -13,6 +13,7 @@ class EventType(str, enum.Enum):
     CANCELLATION = "cancellation"
     CONVERSION_STEP = "conversion_step"
     LEVERAGE_CHANGE = "leverage_change"
+    PARTIAL_REDUCTION = "partial_reduction"
     EXPIRY = "expiry"
     ADMIN_OVERRIDE = "admin_override"
 

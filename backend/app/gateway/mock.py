@@ -15,18 +15,18 @@ class MockMT5Gateway(MT5Gateway):
 
     def _seed_accounts(self):
         test_accounts = [
-            ("10001", 5000.0, 500, "demo\\standard", "US", "John Doe"),
-            ("10002", 10000.0, 200, "demo\\standard", "UK", "Jane Smith"),
-            ("10003", 2500.0, 1000, "demo\\premium", "DE", "Hans Mueller"),
-            ("10004", 50000.0, 100, "live\\standard", "JP", "Taro Yamada"),
-            ("10005", 1000.0, 500, "demo\\standard", "AU", "Alice Brown"),
-            ("10006", 7500.0, 300, "live\\premium", "CA", "Bob Wilson"),
-            ("10007", 15000.0, 200, "demo\\vip", "FR", "Pierre Dupont"),
-            ("10008", 3000.0, 500, "live\\standard", "BR", "Carlos Silva"),
-            ("10009", 20000.0, 100, "live\\vip", "SG", "Wei Chen"),
-            ("10010", 500.0, 500, "demo\\micro", "IN", "Raj Patel"),
+            ("10001", 5000.0, 500, "demo\\standard", "US", "John Doe", "IB001"),
+            ("10002", 10000.0, 200, "demo\\standard", "UK", "Jane Smith", "IB002"),
+            ("10003", 2500.0, 1000, "demo\\premium", "DE", "Hans Mueller", ""),
+            ("10004", 50000.0, 100, "live\\standard", "JP", "Taro Yamada", "IB003"),
+            ("10005", 1000.0, 500, "demo\\standard", "AU", "Alice Brown", ""),
+            ("10006", 7500.0, 300, "live\\premium", "CA", "Bob Wilson", "IB001"),
+            ("10007", 15000.0, 200, "demo\\vip", "FR", "Pierre Dupont", ""),
+            ("10008", 3000.0, 500, "live\\standard", "BR", "Carlos Silva", "IB002"),
+            ("10009", 20000.0, 100, "live\\vip", "SG", "Wei Chen", ""),
+            ("10010", 500.0, 500, "demo\\micro", "IN", "Raj Patel", ""),
         ]
-        for login, balance, leverage, group, country, name in test_accounts:
+        for login, balance, leverage, group, country, name, lead_source in test_accounts:
             self.accounts[login] = MT5Account(
                 login=login,
                 balance=balance,
@@ -36,6 +36,7 @@ class MockMT5Gateway(MT5Gateway):
                 group=group,
                 country=country,
                 name=name,
+                lead_source=lead_source,
             )
             self.deals[login] = []
 

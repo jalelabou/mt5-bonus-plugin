@@ -153,36 +153,69 @@ async def check_eligibility(
     mt5_login: str,
     deposit_amount: Optional[float] = None,
 ) -> tuple[bool, str]:
+    """Quick check that returns on the first failure (used by automated triggers)."""
+    failures = await check_eligibility_all(db, campaign, mt5_login, deposit_amount)
+    if failures:
+        return False, failures[0]["message"]
+    return True, "Eligible"
+
+
+async def check_eligibility_all(
+    db: AsyncSession,
+    campaign: Campaign,
+    mt5_login: str,
+    deposit_amount: Optional[float] = None,
+) -> list[dict]:
+    """Return ALL eligibility failures as a list of {check, message, overridable} dicts."""
+    failures: list[dict] = []
+
     if campaign.status != CampaignStatus.ACTIVE:
-        return False, "Campaign is not active"
+        failures.append({"check": "campaign_status", "message": "Campaign is not active", "overridable": False})
 
     if campaign.end_date:
         end = campaign.end_date
         if end.tzinfo is None:
             end = end.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) > end:
-            return False, "Campaign has ended"
+            failures.append({"check": "campaign_ended", "message": "Campaign has ended", "overridable": False})
 
     account = await gateway.get_account_info(mt5_login)
     if not account:
-        return False, "MT5 account not found"
+        failures.append({"check": "account_not_found", "message": "MT5 account not found", "overridable": False})
+        return failures  # Can't check further without account
 
     # Group targeting
     if campaign.target_mt5_groups:
         if account.group not in campaign.target_mt5_groups:
-            return False, f"Account group {account.group} not in target groups"
+            failures.append({
+                "check": "group_mismatch",
+                "message": f"Account group '{account.group}' not in target groups: {campaign.target_mt5_groups}",
+                "overridable": True,
+            })
 
     # Country targeting
     if campaign.target_countries:
         if account.country not in campaign.target_countries:
-            return False, f"Account country {account.country} not in target countries"
+            failures.append({
+                "check": "country_mismatch",
+                "message": f"Account country '{account.country}' not in target countries: {campaign.target_countries}",
+                "overridable": True,
+            })
 
     # Deposit thresholds
     if deposit_amount is not None:
         if campaign.min_deposit and deposit_amount < campaign.min_deposit:
-            return False, f"Deposit {deposit_amount} below minimum {campaign.min_deposit}"
+            failures.append({
+                "check": "deposit_below_min",
+                "message": f"Deposit ${deposit_amount} below minimum ${campaign.min_deposit}",
+                "overridable": True,
+            })
         if campaign.max_deposit and deposit_amount > campaign.max_deposit:
-            return False, f"Deposit {deposit_amount} above maximum {campaign.max_deposit}"
+            failures.append({
+                "check": "deposit_above_max",
+                "message": f"Deposit ${deposit_amount} above maximum ${campaign.max_deposit}",
+                "overridable": True,
+            })
 
     # One bonus per account
     if campaign.one_bonus_per_account:
@@ -193,7 +226,11 @@ async def check_eligibility(
             )
         )
         if (existing.scalar() or 0) > 0:
-            return False, "Account already received this campaign bonus"
+            failures.append({
+                "check": "duplicate_bonus",
+                "message": "Account already received this campaign bonus",
+                "overridable": True,
+            })
 
     # Max concurrent bonuses
     active_count_q = select(func.count(Bonus.id)).where(
@@ -201,6 +238,10 @@ async def check_eligibility(
     )
     active_count = (await db.execute(active_count_q)).scalar() or 0
     if active_count >= campaign.max_concurrent_bonuses:
-        return False, f"Account has {active_count} active bonuses (max: {campaign.max_concurrent_bonuses})"
+        failures.append({
+            "check": "max_concurrent",
+            "message": f"Account has {active_count} active bonuses (max: {campaign.max_concurrent_bonuses})",
+            "overridable": True,
+        })
 
-    return True, "Eligible"
+    return failures

@@ -78,8 +78,10 @@ class RealMT5Gateway(MT5Gateway):
                 code = ""
                 msg = resp.text
             # Auto-reconnect on auth/token errors and retry once
+            msg_upper = msg.upper() if msg else ""
             if _retry and ("AUTH" in code.upper() or "NOT_FOUND" in code.upper()
-                           or "INVALID" in code.upper() or resp.status_code in (401, 403)):
+                           or "INVALID" in code.upper() or resp.status_code in (401, 403)
+                           or "NOT FOUND" in msg_upper or "CLIENT WITH ID" in msg_upper):
                 logger.warning("MT5 token may be expired, reconnecting... (code=%s)", code)
                 self._token = None
                 await self.connect()
@@ -108,6 +110,7 @@ class RealMT5Gateway(MT5Gateway):
                 group=str(user.get("group", "")),
                 country=str(user.get("country", "")),
                 name=str(user.get("name", "")),
+                lead_source=str(user.get("leadSource", "")),
             )
         except MT5ManagerAPIError as e:
             if "NOTFOUND" in e.code or "NOTFOUND" in str(e):

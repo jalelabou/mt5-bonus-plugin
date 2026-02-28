@@ -16,22 +16,35 @@ async def process_deposit_trigger(
     agent_code: Optional[str] = None,
 ) -> List[dict]:
     results = []
-    campaigns = await _get_active_campaigns_for_trigger("auto_deposit", db)
+
+    # Collect all matching campaigns: auto_deposit + agent_code (via lead source)
+    seen_ids: set[int] = set()
+    campaigns: List[Campaign] = []
+
+    for c in await _get_active_campaigns_for_trigger("auto_deposit", db):
+        if c.id in seen_ids:
+            continue
+        # If this campaign also has agent_codes configured, it requires a matching
+        # lead source — skip it if the account has no lead source or doesn't match.
+        if c.agent_codes:
+            if not agent_code or agent_code not in c.agent_codes:
+                continue
+        seen_ids.add(c.id)
+        campaigns.append(c)
+
+    if agent_code:
+        for c in await _get_active_campaigns_for_trigger("agent_code", db):
+            if c.id not in seen_ids and c.agent_codes and agent_code in c.agent_codes:
+                seen_ids.add(c.id)
+                campaigns.append(c)
 
     for campaign in campaigns:
-        # Also check agent code campaigns
-        if agent_code:
-            agent_campaigns = await _get_active_campaigns_for_trigger("agent_code", db)
-            for ac in agent_campaigns:
-                if ac.agent_codes and agent_code in ac.agent_codes and ac.id != campaign.id:
-                    campaigns.append(ac)
-
         eligible, reason = await check_eligibility(db, campaign, mt5_login, deposit_amount)
 
         trigger_event = TriggerEvent(
             campaign_id=campaign.id,
             mt5_login=mt5_login,
-            trigger_type="auto_deposit",
+            trigger_type="agent_code" if (agent_code and campaign.agent_codes and agent_code in campaign.agent_codes) else "auto_deposit",
             event_data={"deposit_amount": deposit_amount, "agent_code": agent_code},
         )
 
