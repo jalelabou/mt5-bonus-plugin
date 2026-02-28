@@ -14,7 +14,7 @@ The system continuously monitors all MT5 accounts in real-time (every 0.3 second
 
 - **Auto-Discovery**: New MT5 accounts are automatically detected and registered for monitoring. No manual setup needed.
 - **Deposit Detection**: Balance increases are detected via snapshot comparison and confirmed through MT5 deal history. Matching `auto_deposit` campaigns automatically assign bonuses.
-- **Withdrawal Detection**: Balance decreases trigger automatic cancellation of all active bonuses and credit removal.
+- **Withdrawal Detection**: Balance decreases trigger **proportional** credit reduction. E.g., withdrawing 10% of balance removes 10% of credit. Type A leverage is recalculated to match the new credit/balance ratio. Full withdrawal cancels everything.
 - **Drawdown Protection**: When a trader's equity drops to or below their credit (meaning they've lost all their own funds), the system automatically:
   1. Closes all open positions
   2. Cancels all active bonuses
@@ -33,12 +33,12 @@ The system continuously monitors all MT5 accounts in real-time (every 0.3 second
 - **Auto on Deposit**: Fires automatically when a qualifying deposit is detected by the monitor
 - **Promo Code**: Validated against active campaigns
 - **On Registration**: Fires when a new MT5 account is created
-- **Agent/Group Code**: IB agent codes trigger bonuses for referred clients (configurable per campaign)
+- **Agent/Group Code**: IB agent codes trigger bonuses for referred clients. The MT5 **Lead Source** field is read automatically from the account — if it matches a campaign's agent codes, the bonus is assigned on deposit. Campaigns with agent codes only fire when Lead Source matches (no match = no bonus).
 
 ### Admin Dashboard
 - **Dashboard**: Overview stats (active campaigns, bonuses, conversions)
 - **Campaign Manager**: List, create, edit, duplicate, archive campaigns
-- **Bonus Monitor**: Real-time view of all bonuses with cancel/force-convert actions
+- **Bonus Monitor**: Real-time view of all bonuses with cancel/force-convert actions. Manual assign with **eligibility override** — group/country/trigger mismatches show a confirmation dialog instead of blocking.
 - **Account Lookup**: Search by MT5 login — view balance, equity, credit, leverage, bonus history, audit trail
 - **Reports**: Summary, conversion progress, cancellations, leverage adjustments with CSV/Excel export
 - **Audit Log**: Immutable log of all bonus events with before/after state
@@ -83,7 +83,7 @@ By default, the backend starts in **mock mode** with 10 simulated MT5 accounts. 
 ```bash
 cd frontend
 npm install
-npm run dev           # Starts on http://localhost:5173
+npm run dev           # Starts on http://localhost:5174
 ```
 
 ### Default Credentials
@@ -143,7 +143,7 @@ alembic upgrade head
 | `SECRET_KEY` | `dev-secret-key-not-for-production` | JWT signing key (change in production!) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | JWT refresh token lifetime |
-| `CORS_ORIGINS` | `["http://localhost:5173"]` | Allowed CORS origins |
+| `CORS_ORIGINS` | `["http://localhost:5174"]` | Allowed CORS origins |
 | `MT5_BRIDGE_URL` | (empty) | MT5 Manager REST API bridge URL |
 | `MT5_SERVER` | (empty) | MT5 server IP address |
 | `MT5_MANAGER_LOGIN` | (empty) | MT5 Manager login |
@@ -168,7 +168,8 @@ alembic upgrade head
 ### Bonuses
 - `GET /api/bonuses` — List bonuses
 - `GET /api/bonuses/{id}` — Bonus detail with lot progress
-- `POST /api/bonuses/assign` — Manual assign
+- `POST /api/bonuses/check-eligibility` — Check eligibility (returns all failures with overridable flag)
+- `POST /api/bonuses/assign` — Manual assign (supports `override_eligibility: true` to bypass overridable checks)
 - `POST /api/bonuses/{id}/cancel` — Cancel bonus
 - `POST /api/bonuses/{id}/force-convert` — Force convert (Type C)
 - `POST /api/bonuses/{id}/override-leverage` — Override leverage (Type A)
@@ -215,7 +216,8 @@ Both jobs are coalesced (`max_instances=1`) to prevent overlap if a cycle takes 
 2. **Account discovery**: The monitor automatically discovers all MT5 accounts and registers them for polling.
 3. **Deposit detection**: Every 0.3s, the monitor compares each account's current balance against its stored snapshot. If balance increased (and credit didn't), it's a deposit.
 4. **Deal confirmation**: The system fetches balance deal history from MT5 to get exact deposit amounts.
-5. **Bonus assignment**: For each deposit, `process_deposit_trigger` checks all active `auto_deposit` campaigns. If the account and deposit match the campaign's eligibility rules (group, country, amount range), the bonus is assigned automatically.
+5. **Agent code matching**: The account's MT5 Lead Source field is read. If it matches a campaign's agent codes, that campaign is also triggered alongside any `auto_deposit` campaigns. Campaigns with agent codes configured will only fire when the Lead Source matches.
+6. **Bonus assignment**: For each matching campaign, `process_deposit_trigger` checks eligibility rules (group, country, amount range). If eligible, the bonus is assigned automatically.
 6. **Credit posted**: The bonus credit is posted to the MT5 account via the Manager API, and the snapshot is updated.
 
 ## Project Structure
