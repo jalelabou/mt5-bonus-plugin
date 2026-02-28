@@ -210,6 +210,45 @@ The backend runs two background jobs via APScheduler:
 
 Both jobs are coalesced (`max_instances=1`) to prevent overlap if a cycle takes longer than the interval.
 
+## Manual Bonus Assignment & Eligibility Override
+
+Admins can manually assign bonuses from the **Bonus Monitor** page. When eligibility checks fail, the system supports overriding certain checks with a confirmation dialog.
+
+### How It Works
+
+1. **Admin opens Assign Bonus** modal, selects an MT5 account and campaign.
+2. Backend runs all eligibility checks via `check_eligibility_all()` and returns every failure (not just the first).
+3. Each failure is classified as **overridable** or **non-overridable**:
+
+| Check | Overridable | Description |
+|-------|-------------|-------------|
+| `campaign_status` | No | Campaign is not active |
+| `campaign_ended` | No | Campaign has passed its end date |
+| `account_not_found` | No | MT5 account does not exist |
+| `group_mismatch` | Yes | Account group not in campaign target groups |
+| `country_mismatch` | Yes | Account country not in campaign target countries |
+| `deposit_below_min` | Yes | Deposit below campaign minimum |
+| `deposit_above_max` | Yes | Deposit above campaign maximum |
+| `duplicate_bonus` | Yes | Account already received this campaign bonus |
+| `max_concurrent` | Yes | Account has max concurrent active bonuses |
+
+4. If there are only **overridable** failures, the frontend shows a red confirmation dialog listing all mismatches. Admin can click **"Override & Assign"** to proceed anyway.
+5. If there are any **non-overridable** failures, the assignment is blocked completely.
+6. When overriding, the backend re-sends the request with `override_eligibility: true`, which skips overridable checks but still enforces non-overridable ones.
+
+### API Flow
+
+- `POST /api/bonuses/assign` with `override_eligibility: false` (default) -- returns HTTP 409 with all failures if ineligible
+- `POST /api/bonuses/assign` with `override_eligibility: true` -- skips overridable checks, blocks on non-overridable ones
+- `POST /api/bonuses/check-eligibility` -- standalone check that returns all failures without assigning
+
+### Key Files
+
+- `backend/app/services/bonus_engine.py` -- `check_eligibility_all()` returns all failures with overridable flag
+- `backend/app/api/bonuses.py` -- `/assign` endpoint with 409 override flow
+- `backend/app/schemas/bonus.py` -- `BonusAssign` schema with `override_eligibility` field
+- `frontend/src/pages/bonuses/BonusMonitor.tsx` -- `handleAssign()` with confirmation dialog
+
 ## How Auto-Deposit Bonus Works
 
 1. **Campaign setup**: Create a campaign with trigger type "Auto on Deposit", set the bonus percentage, target groups/countries, and deposit thresholds.
